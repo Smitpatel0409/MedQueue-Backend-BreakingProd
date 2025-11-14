@@ -42,8 +42,8 @@ async function bootstrap() {
   const appLogger = app.get(AppLoggerService);
   app.useLogger(appLogger);
   const config = new DocumentBuilder()
-    .setTitle('VOXIFY API')
-    .setDescription('The VOXIFY API description')
+    .setTitle('BREAKING PROD API')
+    .setDescription('The BREAKING PROD API description')
     .setVersion('1.0.0')
     .addBearerAuth()
     .build();
