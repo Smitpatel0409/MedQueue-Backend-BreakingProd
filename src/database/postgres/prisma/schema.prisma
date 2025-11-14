@@ -1,6 +1,5 @@
 generator client {
   provider = "prisma-client-js"
-  binaryTargets = ["native", "debian-openssl-3.0.x"]
 }
 
 datasource db {
@@ -8,44 +7,273 @@ datasource db {
   url      = env("DATABASE_URL")
 }
 
-enum Role {
-  USER
+// ============================================
+// USER MANAGEMENT & AUTH
+// ============================================
+
+enum UserRole {
+  RECEPTIONIST
+  DOCTOR
+  NURSE
   ADMIN
 }
 
-enum Gender {
-  MALE
-  FEMALE
-  OTHER
-  UNKNOWN
+model User {
+  id       String   @id @default(cuid())
+  email    String   @unique
+  password String // Hashed password
+  name     String
+  role     UserRole
+
+  department   Department? @relation(fields: [departmentId], references: [id])
+  departmentId String?
+
+  isActive  Boolean  @default(true)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  // Relations
+  tokensCreated Token[]        @relation("CreatedBy")
+  consultations Consultation[]
+  vitalChecks   VitalCheck[]
+
+  @@index([email])
+  @@index([departmentId])
 }
 
+// ============================================
+// DEPARTMENT & DOCTOR CONFIGURATION
+// ============================================
 
-// model User {
-//   id            String         @id @default(uuid())
-//   email         String?
-//   phoneNumber   String?
-//   password      String?
-//   isVerified    Boolean        @default(false)
-//   role          Role
-//   createdAt     DateTime       @default(now())
-//   updatedAt     DateTime       @updatedAt
-//   isDeleted     Boolean        @default(false)
-//   profileUrl    String?
-//   refreshTokens RefreshToken[]
-//   @@index([email])
-//   @@index([phoneNumber])
-// }
+model Department {
+  id          String  @id @default(cuid())
+  name        String  @unique // e.g., "Cardiology", "Pediatrics"
+  code        String  @unique // e.g., "CARD", "PED"
+  floor       String? // e.g., "3rd Floor"
+  roomNumber  String? // e.g., "Room 305"
+  description String?
 
-// model RefreshToken {
-//   id        String   @id @default(uuid())
-//   token     String   @unique
-//   userId    String
-//   ipAddress String?
-//   expiresAt DateTime
-//   createdAt DateTime @default(now())
-//   updatedAt DateTime @updatedAt
-//   user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  isActive  Boolean  @default(true)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
 
-//   @@index([userId])
-// }
+  // Relations
+  tokens          Token[]
+  users           User[]
+  consultations   Consultation[]
+  symptomMappings SymptomMapping[]
+
+  @@index([code])
+}
+
+// ============================================
+// TRIAGE & SYMPTOM MAPPING
+// ============================================
+
+enum Priority {
+  HIGH // Urgent cases
+  MEDIUM // Moderate cases
+  LOW // Routine cases
+}
+
+model SymptomMapping {
+  id           String     @id @default(cuid())
+  keywords     String[] // Array of symptom keywords
+  priority     Priority
+  department   Department @relation(fields: [departmentId], references: [id])
+  departmentId String
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([departmentId])
+}
+
+// ============================================
+// TOKEN & PATIENT MANAGEMENT
+// ============================================
+
+enum VisitType {
+  NEW_VISIT
+  FOLLOW_UP
+  REPORTS_ONLY
+}
+
+enum TokenStatus {
+  WAITING // Patient is waiting
+  VITALS_IN_PROGRESS // Nurse is taking vitals
+  VITALS_DONE // Vitals completed, waiting for doctor
+  IN_CONSULTATION // Currently with doctor
+  COMPLETED // Consultation finished
+  NO_SHOW // Patient didn't show up
+  CANCELLED // Token cancelled
+}
+
+model Token {
+  id          String @id @default(cuid())
+  tokenNumber String @unique // e.g., "CARD-H-014"
+
+  // Patient Information
+  patientName   String
+  age           Int
+  gender        String
+  contactNumber String?
+  symptoms      String // Brief description
+
+  // Visit Details
+  visitType VisitType
+  priority  Priority
+  status    TokenStatus @default(WAITING)
+
+  // Assignment
+  department   Department @relation(fields: [departmentId], references: [id])
+  departmentId String
+
+  // Queue Management
+  queuePosition        Int // Position in queue
+  estimatedWaitMinutes Int? // Calculated wait time
+
+  // Timestamps
+  createdAt   DateTime  @default(now())
+  calledAt    DateTime? // When patient was called
+  completedAt DateTime? // When consultation finished
+  updatedAt   DateTime  @updatedAt
+
+  // Relations
+  createdBy   User   @relation("CreatedBy", fields: [createdById], references: [id])
+  createdById String
+
+  vitalCheck   VitalCheck?
+  consultation Consultation?
+  nextSteps    NextStep[]
+
+  @@index([tokenNumber])
+  @@index([departmentId, status])
+  @@index([createdAt])
+  @@index([status])
+}
+
+// ============================================
+// VITALS & PRE-CONSULTATION
+// ============================================
+
+model VitalCheck {
+  id String @id @default(cuid())
+
+  token   Token  @relation(fields: [tokenId], references: [id], onDelete: Cascade)
+  tokenId String @unique
+
+  // Vital Signs
+  bloodPressure    String? // e.g., "120/80"
+  heartRate        Int? // BPM
+  temperature      Float? // Celsius
+  weight           Float? // kg
+  height           Float? // cm
+  oxygenSaturation Int? // SpO2 percentage
+
+  notes String?
+
+  checkedBy   User   @relation(fields: [checkedById], references: [id])
+  checkedById String
+
+  checkedAt DateTime @default(now())
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([tokenId])
+}
+
+// ============================================
+// CONSULTATION & DOCTOR WORKFLOW
+// ============================================
+
+model Consultation {
+  id String @id @default(cuid())
+
+  token   Token  @relation(fields: [tokenId], references: [id], onDelete: Cascade)
+  tokenId String @unique
+
+  department   Department @relation(fields: [departmentId], references: [id])
+  departmentId String
+
+  doctor   User   @relation(fields: [doctorId], references: [id])
+  doctorId String
+
+  // Consultation Details
+  diagnosis     String?
+  prescriptions String? // Could be JSON or separate table
+  notes         String?
+
+  // Timing
+  startedAt       DateTime  @default(now())
+  endedAt         DateTime?
+  durationMinutes Int?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([tokenId])
+  @@index([doctorId])
+  @@index([departmentId])
+}
+
+// ============================================
+// PATIENT JOURNEY & NEXT STEPS
+// ============================================
+
+enum NextStepType {
+  LAB_TEST
+  RADIOLOGY
+  PHARMACY
+  SPECIALIST_REFERRAL
+  FOLLOW_UP
+  ADMISSION
+  DISCHARGE
+}
+
+model NextStep {
+  id String @id @default(cuid())
+
+  token   Token  @relation(fields: [tokenId], references: [id], onDelete: Cascade)
+  tokenId String
+
+  stepType     NextStepType
+  description  String // e.g., "Blood test - CBC, Lipid Profile"
+  location     String? // e.g., "Lab - 2nd Floor, Room 201"
+  instructions String? // Additional guidance
+
+  isCompleted Boolean   @default(false)
+  completedAt DateTime?
+
+  sequence Int // Order of steps (1, 2, 3...)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([tokenId])
+  @@index([isCompleted])
+}
+
+// ============================================
+// HOSPITAL CONFIGURATION
+// ============================================
+
+model HospitalConfig {
+  id String @id @default(cuid())
+
+  // Queue Settings
+  avgConsultationTime    Int   @default(10) // minutes
+  highPriorityMultiplier Float @default(0.5) // Wait time multiplier
+
+  // Display Settings
+  autoRefreshInterval Int @default(30) // seconds
+
+  // Business Hours
+  openingTime String @default("08:00")
+  closingTime String @default("20:00")
+
+  // Notifications
+  smsEnabled Boolean @default(false)
+
+  updatedAt DateTime @updatedAt
+}
