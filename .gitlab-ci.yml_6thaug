@@ -1,0 +1,76 @@
+## used variables in gitlab variables
+#QA_SSH_HOST
+#QA_SSH_PORT
+#QA_SSH_PRIVATE_KEY - private key of gitlab server
+#QA_SSH_USER
+## global variables.
+## REGISTRY_USER, REGISTRY_URL, REGISTRY_TOKEN 
+image: docker:24.0.5
+
+variables:
+  DOCKER_HOST: tcp://docker:2375
+  DOCKER_TLS_CERTDIR: ""
+  DOCKER_DRIVER: overlay2
+  QA_DEPLOY_PATH: /home/bengaluru/docker-files/nurovision_QA/backend
+  GIT_USERNAME: administrator
+  GIT_PASSWORD: nuvoai@2024
+  BRANCH: QA
+  PROJECT_NAME: "nurovision-backend"
+  APP_IMAGE: docker.merai.app/nurovision/backend:$BRANCH-$CI_COMMIT_SHORT_SHA
+
+stages:
+  - build
+  - test
+  - deploy
+
+services:
+- name: docker:24.0.5-dind
+  alias: docker
+
+build:
+  stage: build
+  tags:
+    - docker
+  script:
+    - docker info
+    - echo "$REGISTRY_TOKEN" | docker login -u "$REGISTRY_USER" --password-stdin "$REGISTRY_URL"
+    - echo "Starting image build - $BRANCH-$CI_COMMIT_SHORT_SHA"
+    - docker build -t $PROJECT_NAME:$BRANCH-$CI_COMMIT_SHORT_SHA .
+    - echo "Setting up tag to image - $PROJECT_NAME:$BRANCH-$CI_COMMIT_SHORT_SHA"
+    - docker tag $PROJECT_NAME:$BRANCH-$CI_COMMIT_SHORT_SHA $APP_IMAGE
+    - echo "Push image to docker registry"
+    - docker push $APP_IMAGE
+  only:
+    - QA
+
+deploy:
+  stage: deploy
+  tags:
+    - docker
+
+  before_script:
+    - 'which ssh-agent || ( apt-get update -y && apt-get install openssh-client -y )'
+    - eval $(ssh-agent -s)
+    - mkdir ~/.ssh
+    - echo "$QA_SSH_PRIVATE_KEY" > ~/.ssh/id_rsa
+    - chmod 600 ~/.ssh/id_rsa
+    - echo "QA_SSH_HOST - $QA_SSH_HOST"
+    - ssh-keyscan -p $QA_SSH_PORT $QA_SSH_HOST >> ~/.ssh/known_hosts
+  script:
+    - |
+      ssh -p "$QA_SSH_PORT" -i ~/.ssh/id_rsa "$QA_SSH_USER@$QA_SSH_HOST" \
+      "QA_DEPLOY_PATH='$QA_DEPLOY_PATH' bash -s" <<'EOF'
+      echo "Connected to remote server"
+      if [ -d "$QA_DEPLOY_PATH" ]; then
+          cd $QA_DEPLOY_PATH && 
+          git pull origin QA &&
+          docker-compose down --remove-orphans --volumes && 
+          docker-compose pull && 
+          docker-compose up -d --build
+      else
+          echo "Deploy directory not exists"
+          exit 0
+      fi
+      EOF
+  only:
+    - QA

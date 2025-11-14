@@ -1,0 +1,40 @@
+version: '3.9'
+
+services:
+  postgres:
+    image: postgres:16
+    container_name: postgres
+    restart: always
+    environment:
+      POSTGRES_USER: admin
+      POSTGRES_PASSWORD: password
+      POSTGRES_DB: breaking_prod
+      POSTGRES_MAX_CONNECTIONS: 300
+    ports:
+      - '5432:5432'
+    volumes:
+      - pg_data:/var/lib/postgresql/data
+    networks:
+      - breaking_network
+
+  app:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: breaking-prod
+    restart: always
+    ports:
+      - '5000:5000'
+    env_file:
+      - .env.prod
+    depends_on:
+      - postgres
+    networks:
+      - breaking_network
+
+volumes:
+  pg_data:
+
+networks:
+  breaking_network:
+    driver: bridge

@@ -1,0 +1,103 @@
+image: docker:24.0.5-cli
+services:
+  - name: docker:24.0.5-dind
+    alias: docker
+variables:
+  DOCKER_HOST: "tcp://docker:2375"
+  DOCKER_TLS_CERTDIR: ""
+  REGISTRY_URL: "docker.merai.app"
+  REGISTRY_ORG: "nurovision"
+  IMAGE_NAME: "$REGISTRY_URL/$REGISTRY_ORG/$CI_PROJECT_NAME"
+
+stages:
+  - build
+  - deploy_qa
+  - deploy_prod
+build:
+  stage: build
+  before_script:
+    - apk add --no-cache jq
+    - echo "$REGISTRY_TOKEN" | docker login "$REGISTRY_URL" -u "$REGISTRY_USER" --password-stdin
+  script:
+    - |
+      VERSION=$(jq -r .version package.json)
+      if [[ -z "$VERSION" || "$VERSION" == "null" ]]; then
+        echo "❌ VERSION not found in package.json"
+        exit 1
+      fi
+      VERSION_TAG="${VERSION}-qa"
+      echo "VERSION=$VERSION_TAG" > version.env
+      docker build -t $IMAGE_NAME:$VERSION_TAG .
+      docker push $IMAGE_NAME:$VERSION_TAG
+      echo "Built and pushed $IMAGE_NAME:$VERSION_TAG"
+  artifacts:
+    reports:
+      dotenv: version.env
+  rules:
+    - if: '$CI_COMMIT_BRANCH == "QA"'
+    - if: '$CI_COMMIT_BRANCH == "production"'
+  tags:
+    - docker
+deploy_qa:
+  stage: deploy_qa
+  image: node:22
+  variables:
+    TAG: $VERSION
+  before_script:
+    - apt-get update -y && apt-get install -y openssh-client
+    - eval "$(ssh-agent -s)"
+    - echo "$QA_SSH_PRIVATE_KEY" | tr -d '\r' | ssh-add -
+    - mkdir -p ~/.ssh
+    - echo -e "Host $QA_SSH_HOST\n  Port 7722\n  StrictHostKeyChecking no" >> ~/.ssh/config
+    - ssh-keyscan -p 7722 "$QA_SSH_HOST" >> ~/.ssh/known_hosts || true
+    - chmod 400 ~/.ssh/*
+    - chmod +x Scripts/*.sh Scripts/qa_deploy.sh
+  script:
+    - |
+      if [[ -z "$TAG" ]]; then
+        echo "TAG not set. Build job must run first."
+        exit 1
+      fi
+      bash Scripts/qa_deploy.sh qa "$TAG"
+  environment:
+    name: qa
+  needs:
+    - job: build
+      artifacts: true
+  rules:
+    - if: '$CI_COMMIT_BRANCH == "QA"'
+  tags:
+    - docker
+deploy_prod:
+  stage: deploy_prod
+  image: node:22
+  variables:
+    TAG: $VERSION
+  before_script:
+    - apt-get update -y && apt-get install -y openssh-client
+    - eval "$(ssh-agent -s)"
+    - echo "$SSH_PRIVATE_KEY" | tr -d '\r' | ssh-add -
+    - mkdir -p ~/.ssh
+    - echo -e "Host $PROD_SERVER\n  Port 7722\n  StrictHostKeyChecking no" >> ~/.ssh/config
+    - ssh-keyscan -p 7722 "$PROD_SERVER" >> ~/.ssh/known_hosts || true
+    - chmod 400 ~/.ssh/*
+    - chmod +x Scripts/*.sh Scripts/prod_deploy.sh
+  script:
+    - |
+      if [[ -z "$TAG" ]]; then
+        echo "TAG not set. Build job must run first."
+        exit 1
+      fi
+      bash Scripts/prod_deploy.sh prod "$TAG"
+  environment:
+    name: prod
+  needs:
+    - job: build
+      artifacts: true
+  rules:
+    - if: '$CI_COMMIT_BRANCH == "production"'
+      when: manual
+  tags:
+    - docker
+
+
